@@ -1,0 +1,33 @@
+# --- R / RStudio ---
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+.Rapp.history
+*.Rcheck/
+.httr-oauth
+
+# --- Archivos intermedios de knitr / R Markdown ---
+*_cache/
+*_files/
+*.knit.md
+*.utf8.md
+reporte.tex
+*.log
+*.aux
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# --- Archivos temporales de Office (se crean al abrir el Excel) ---
+~$*.xlsx
+
+# --- Sistema operativo / editores ---
+.DS_Store
+Thumbs.db
+*~
+*.swp

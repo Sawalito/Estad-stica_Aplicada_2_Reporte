@@ -1,0 +1,561 @@
+---
+title: "Proyecto acumulativo — Primera entrega: Regresión lineal simple"
+subtitle: "Relación entre el gasto en educación y el ingreso de los hogares mexicanos"
+author: |
+  | Diego Rafael Escoto Arroyo
+  | Adrián Janus González Adamuz
+  | Lourdes Ángelica Gutierrez Landa
+  | Luis Fernando Rodriguez Retama
+  | Saúl Ubaldo Rojas Vázquez
+  | Johan Santiago Sanchez Rosales
+date: "2026-09-28"
+# lang: es
+output:
+  pdf_document:
+    latex_engine: xelatex
+    number_sections: true
+    toc: true
+    fig_caption: true
+geometry: margin=2.5cm
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{float}
+  - \floatplacement{figure}{H}
+  - \usepackage{tocloft}
+  - \setlength{\cftbeforesecskip}{4pt}
+  - \setlength{\cftbeforesubsecskip}{1pt}
+  - \AtBeginDocument{\renewcommand{\contentsname}{Índice}\renewcommand{\figurename}{Figura}\renewcommand{\tablename}{Cuadro}}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center", fig.width = 6.5, fig.height = 3.8,
+                      fig.pos = "H")
+options(scipen = 5, digits = 6)
+library(readxl)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+
+# Formato de números con separador de miles
+f <- function(x, d = 2) formatC(x, format = "f", digits = d, big.mark = ",")
+# Versión para modo matemático (evita el espacio tras la coma)
+fm <- function(x, d = 2) gsub(",", "{,}", f(x, d), fixed = TRUE)
+# Notación científica en LaTeX: a \times 10^{b}
+sci <- function(p, d = 3) {
+  b <- floor(log10(p)); a <- signif(p / 10^b, d)
+  paste0(a, " \\times 10^{", b, "}")
+}
+```
+
+\newpage
+
+# Introducción
+
+Los datos provienen de mediciones realizadas por el INEGI (principalmente la ENIGH) en los hogares mexicanos, por entidad federativa, para los años 2018, 2020 y 2022. El objetivo de esta primera entrega es estudiar la relación entre la **educación** y el **nivel de ingreso** de los hogares mediante un modelo de regresión lineal simple, donde:
+
+* **Variable respuesta** ($Y$): `INGRESO.PROM`, ingreso corriente total trimestral promedio de los hogares (pesos).
+* **Variable explicativa** ($x$): `GASTO.EDU`, gasto trimestral promedio de los hogares en artículos y servicios de educación (pesos).
+
+La intuición sugiere que existe una relación **positiva** entre ambas variables: los hogares con mayor ingreso tienden a destinar más recursos a la educación (y, a su vez, un mayor nivel educativo se asocia con mayores ingresos). En este reporte buscamos **probar formalmente** esa hipótesis. Todos los cálculos se realizan de dos maneras: **(i) a mano**, implementando las fórmulas (escalares y en forma matricial) directamente en R, y **(ii) con la función `lm()`**, verificando que ambos resultados coinciden.
+
+```{r datos}
+datos <- as.data.frame(read_excel("datos_1.xlsx", sheet = "Tabulado"))
+datos <- datos[, c("ESTADO", "AÑO", "GASTO.EDU", "INGRESO.PROM")]
+datos$AÑO <- factor(datos$AÑO)
+
+x <- datos$GASTO.EDU      # variable explicativa
+y <- datos$INGRESO.PROM   # variable respuesta
+n <- length(y)
+n
+```
+
+La base contiene `r n` observaciones: las 32 entidades federativas observadas en 3 levantamientos (2018, 2020 y 2022). No hay valores faltantes en las dos variables de interés. Se trabajará con las `r n` observaciones agrupadas (*pooled*); al final se comentan las implicaciones de esta decisión.
+
+\newpage
+
+# Análisis exploratorio y descriptivo
+
+## Medidas resumen
+
+```{r descriptivos, echo=FALSE}
+resumen <- function(v) c(n = length(v), Media = mean(v), Mediana = median(v),
+                         `Desv. est.` = sd(v), Mín = min(v), Q1 = unname(quantile(v, .25)),
+                         Q3 = unname(quantile(v, .75)), Máx = max(v),
+                         `CV (%)` = 100 * sd(v) / mean(v))
+tab <- cbind(`Gasto en educación (x)` = resumen(x),
+             `Ingreso promedio (Y)`   = resumen(y))
+tab_f <- apply(tab, 2, f)
+tab_f["n", ] <- tab["n", ]
+kable(tab_f, format = "latex", booktabs = TRUE, linesep = "", align = "rr",
+      caption = "Estadísticas descriptivas (pesos trimestrales, 2018--2022).") |>
+  kable_styling(latex_options = "HOLD_position")
+```
+
+```{r descriptivos_anio, echo=FALSE}
+por_anio <- do.call(rbind, lapply(split(datos, datos$AÑO), function(d)
+  c(`Media x` = mean(d$GASTO.EDU), `DE x` = sd(d$GASTO.EDU),
+    `Media Y` = mean(d$INGRESO.PROM), `DE Y` = sd(d$INGRESO.PROM),
+    `r(x,Y)` = cor(d$GASTO.EDU, d$INGRESO.PROM))))
+por_anio_f <- apply(por_anio, 2, f)
+por_anio_f[, "r(x,Y)"] <- f(por_anio[, "r(x,Y)"], 3)
+kable(por_anio_f, format = "latex", booktabs = TRUE, linesep = "", align = "r",
+      caption = "Medias, desviaciones estándar y correlación por año.") |>
+  kable_styling(latex_options = "HOLD_position")
+```
+
+**Comentarios.**
+
+* El gasto trimestral promedio en educación es de \$`r f(mean(x))` con una desviación estándar de \$`r f(sd(x))`; su coeficiente de variación (`r f(100*sd(x)/mean(x),1)`%) indica una dispersión relativa considerable entre estados y años.
+* El ingreso trimestral promedio es de \$`r f(mean(y))` (DE \$`r f(sd(y))`), con una dispersión relativa menor (CV de `r f(100*sd(y)/mean(y),1)`%).
+* Por año se observa un fenómeno importante: en **2020** el gasto en educación cae de forma notable respecto a 2018 (posiblemente por la pandemia de COVID-19 y el cierre de escuelas presenciales), mientras que el ingreso se mantiene prácticamente igual. En **2022** ambas variables aumentan, en parte por la recuperación y en parte por la inflación (los montos están en pesos corrientes).
+* Dentro de cada año la correlación entre gasto educativo e ingreso es positiva y alta, lo cual refuerza la intuición.
+
+## Distribución de las variables
+
+```{r boxplots, echo=FALSE, fig.height=3.3, fig.cap="Distribución de las variables por año."}
+largo <- rbind(data.frame(AÑO = datos$AÑO, valor = x, var = "Gasto en educación (x)"),
+               data.frame(AÑO = datos$AÑO, valor = y, var = "Ingreso promedio (Y)"))
+ggplot(largo, aes(AÑO, valor, fill = AÑO)) +
+  geom_boxplot(alpha = .7, show.legend = FALSE) +
+  facet_wrap(~var, scales = "free_y") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = "Año", y = "Pesos trimestrales") + theme_bw()
+```
+
+```{r histogramas, echo=FALSE, fig.height=3.1, fig.cap="Histogramas de ambas variables (todas las observaciones)."}
+ggplot(largo, aes(valor)) +
+  geom_histogram(bins = 15, fill = "steelblue", color = "white") +
+  facet_wrap(~var, scales = "free") +
+  scale_x_continuous(labels = scales::comma) +
+  labs(x = "Pesos trimestrales", y = "Frecuencia") + theme_bw()
+```
+
+Ambas distribuciones muestran asimetría positiva moderada: hay pocas observaciones con valores muy altos y la mayoría se concentra en valores medios. Los mayores gastos en educación corresponden a Ciudad de México, Querétaro y Nuevo León (2022), mientras que los mayores ingresos corresponden a Baja California Sur, Ciudad de México y Baja California (2022). Los boxplots por año muestran algunos valores atípicos en la parte alta del gasto educativo.
+
+## Relación entre las variables
+
+```{r dispersion, echo=FALSE, fig.height=4, fig.cap="Diagrama de dispersión con la recta de mínimos cuadrados (todas las observaciones)."}
+ggplot(datos, aes(GASTO.EDU, INGRESO.PROM)) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = .6) +
+  geom_point(aes(color = AÑO), size = 2) +
+  scale_x_continuous(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = "Gasto trimestral promedio en educación (x)",
+       y = "Ingreso trimestral promedio (Y)", color = "Año") + theme_bw()
+```
+
+```{r correlacion}
+# Coeficiente de correlación de Pearson a mano y con cor()
+r_mano <- sum((x - mean(x)) * (y - mean(y))) /
+  sqrt(sum((x - mean(x))^2) * sum((y - mean(y))^2))
+c(a_mano = r_mano, cor = cor(x, y))
+```
+
+El diagrama de dispersión muestra una tendencia creciente y aproximadamente lineal, con un coeficiente de correlación de Pearson $r =$ `r f(r_mano, 4)`. La relación positiva es clara, aunque existe una dispersión apreciable alrededor de la recta. También se aprecia que los puntos de 2020 (gasto bajo) se ubican a la izquierda y los de 2022 a la derecha, por lo que parte de la variación en $x$ se debe al año del levantamiento.
+
+# Planteamiento del modelo
+
+Se propone el modelo de regresión lineal simple
+$$
+Y_i = \beta_0 + \beta_1 x_i + \varepsilon_i, \qquad i = 1, \dots, n = `r n`,
+$$
+donde $Y_i$ es el ingreso trimestral promedio de los hogares en la observación $i$ (entidad–año), $x_i$ es el gasto trimestral promedio en educación, $\beta_0$ es la ordenada al origen, $\beta_1$ es la pendiente (cambio esperado en el ingreso por cada peso adicional de gasto en educación) y $\varepsilon_i$ es el error aleatorio.
+
+**Supuestos del modelo:**
+
+1. **Linealidad:** $E(Y_i \mid x_i) = \beta_0 + \beta_1 x_i$.
+2. **Media cero:** $E(\varepsilon_i) = 0$.
+3. **Homocedasticidad:** $\operatorname{Var}(\varepsilon_i) = \sigma^2$ constante.
+4. **Independencia:** $\operatorname{Cov}(\varepsilon_i, \varepsilon_j) = 0$ para $i \neq j$.
+5. **Normalidad** (para la inferencia): $\varepsilon_i \overset{iid}{\sim} N(0, \sigma^2)$, de modo que $Y_i \sim N(\beta_0 + \beta_1 x_i, \sigma^2)$.
+
+Los parámetros desconocidos son $\beta_0$, $\beta_1$ y $\sigma^2$.
+
+# Estimación puntual de los parámetros
+
+## Fórmulas
+
+Los estimadores de mínimos cuadrados (que coinciden con los de máxima verosimilitud bajo normalidad para $\beta_0,\beta_1$) minimizan $S(\beta_0,\beta_1)=\sum_{i=1}^n (y_i - \beta_0 - \beta_1 x_i)^2$. Definiendo
+$$
+S_{xx} = \sum_{i=1}^n (x_i - \bar x)^2, \qquad S_{xy} = \sum_{i=1}^n (x_i - \bar x)(y_i - \bar y), \qquad S_{yy} = \sum_{i=1}^n (y_i - \bar y)^2,
+$$
+se obtiene
+$$
+\hat\beta_1 = \frac{S_{xy}}{S_{xx}}, \qquad \hat\beta_0 = \bar y - \hat\beta_1 \bar x .
+$$
+El estimador insesgado de la varianza del error es
+$$
+\hat\sigma^2 = \mathrm{MSE} = \frac{\mathrm{SSE}}{n-2} = \frac{\sum_{i=1}^n (y_i - \hat y_i)^2}{n-2},
+$$
+y los errores estándar de los estimadores son
+$$
+\operatorname{ee}(\hat\beta_1) = \sqrt{\frac{\hat\sigma^2}{S_{xx}}}, \qquad
+\operatorname{ee}(\hat\beta_0) = \sqrt{\hat\sigma^2\left(\frac{1}{n} + \frac{\bar x^2}{S_{xx}}\right)} .
+$$
+
+## Cálculo a mano
+
+```{r estimacion_mano}
+xbar <- mean(x); ybar <- mean(y)
+Sxx <- sum((x - xbar)^2)
+Sxy <- sum((x - xbar) * (y - ybar))
+Syy <- sum((y - ybar)^2)
+
+b1 <- Sxy / Sxx
+b0 <- ybar - b1 * xbar
+
+y_hat <- b0 + b1 * x
+e     <- y - y_hat
+SSE   <- sum(e^2)
+sigma2 <- SSE / (n - 2)
+sigma  <- sqrt(sigma2)
+
+ee_b1 <- sqrt(sigma2 / Sxx)
+ee_b0 <- sqrt(sigma2 * (1 / n + xbar^2 / Sxx))
+
+c(b0 = b0, b1 = b1, sigma2 = sigma2, sigma = sigma, ee_b0 = ee_b0, ee_b1 = ee_b1)
+```
+
+## Cálculo con `lm()`
+
+```{r estimacion_lm}
+modelo <- lm(INGRESO.PROM ~ GASTO.EDU, data = datos)
+summary(modelo)
+```
+
+```{r comparacion, echo=FALSE}
+s <- summary(modelo)
+comp <- data.frame(
+  Parámetro = c("$\\hat\\beta_0$", "$\\hat\\beta_1$", "$\\hat\\sigma$",
+                "ee$(\\hat\\beta_0)$", "ee$(\\hat\\beta_1)$"),
+  `A mano` = f(c(b0, b1, sigma, ee_b0, ee_b1), 4),
+  `lm()`   = f(c(coef(modelo), s$sigma, s$coefficients[, 2]), 4),
+  check.names = FALSE)
+kable(comp, format = "latex", booktabs = TRUE, linesep = "", escape = FALSE, align = "lrr",
+      caption = "Comparación de las estimaciones a mano y con lm().") |>
+  kable_styling(latex_options = "HOLD_position")
+```
+
+```{r verificacion_est}
+all.equal(c(b0, b1), unname(coef(modelo)))
+all.equal(c(ee_b0, ee_b1, sigma), unname(c(s$coefficients[, 2], s$sigma)))
+```
+
+De forma equivalente, en notación matricial con $\mathbf{X} = [\mathbf{1}\ \mathbf{x}]$, los estimadores son $\hat{\boldsymbol\beta} = (\mathbf{X}^\top\mathbf{X})^{-1}\mathbf{X}^\top\mathbf{y}$ y $\widehat{\operatorname{Var}}(\hat{\boldsymbol\beta}) = \hat\sigma^2(\mathbf{X}^\top\mathbf{X})^{-1}$:
+
+```{r estimacion_matricial}
+X <- cbind(1, x)
+XtX_inv <- solve(t(X) %*% X)
+beta_mat <- XtX_inv %*% t(X) %*% y
+V_mat    <- sigma2 * XtX_inv
+cbind(beta = drop(beta_mat), ee = sqrt(diag(V_mat)))
+all.equal(unname(drop(beta_mat)), unname(coef(modelo)))
+all.equal(V_mat, vcov(modelo), check.attributes = FALSE)
+```
+
+Los tres procedimientos producen exactamente los mismos valores. La recta ajustada es
+$$
+\hat y = `r fm(b0)` + `r f(b1, 4)`\, x .
+$$
+
+**Interpretación.**
+
+* $\hat\beta_1 = `r f(b1, 4)`$: por cada peso adicional de gasto trimestral promedio en educación, el ingreso trimestral promedio de los hogares aumenta, en promedio, alrededor de \$`r f(b1)`. Dicho de otra forma, una diferencia de \$1,000 en gasto educativo entre entidades se asocia con una diferencia de aproximadamente \$`r f(1000*b1)` en ingreso trimestral. Esta es una **asociación**, no un efecto causal: es razonable pensar que la causalidad va en ambos sentidos (los hogares con más ingreso pueden gastar más en educación).
+* $\hat\beta_0 = `r fm(b0)`$: sería el ingreso promedio esperado en una entidad con gasto educativo nulo. Como $x = 0$ está muy lejos del rango observado (\$`r f(min(x))` a \$`r f(max(x))`), este valor no tiene una interpretación práctica directa; funciona como parámetro de ajuste de la recta.
+* $\hat\sigma = `r fm(sigma)`$: la desviación típica de los ingresos alrededor de la recta es de aproximadamente \$`r f(sigma, 0)` trimestrales.
+
+# Intervalos de confianza para los parámetros
+
+Bajo los supuestos del modelo,
+$$
+\frac{\hat\beta_j - \beta_j}{\operatorname{ee}(\hat\beta_j)} \sim t_{n-2}, \quad j = 0, 1,
+$$
+por lo que un intervalo de confianza al $100(1-\alpha)\%$ es
+$$
+\hat\beta_j \pm t_{\alpha/2,\, n-2}\; \operatorname{ee}(\hat\beta_j).
+$$
+Para $\sigma^2$, usando que $(n-2)\hat\sigma^2/\sigma^2 \sim \chi^2_{n-2}$,
+$$
+\left( \frac{(n-2)\hat\sigma^2}{\chi^2_{\alpha/2,\, n-2}},\ \frac{(n-2)\hat\sigma^2}{\chi^2_{1-\alpha/2,\, n-2}} \right),
+$$
+donde $\chi^2_{\alpha/2,\,n-2}$ denota el cuantil superior $\alpha/2$.
+
+```{r ic_mano}
+alpha <- 0.05
+t_crit <- qt(1 - alpha / 2, df = n - 2)
+
+IC_b0 <- b0 + c(-1, 1) * t_crit * ee_b0
+IC_b1 <- b1 + c(-1, 1) * t_crit * ee_b1
+IC_s2 <- (n - 2) * sigma2 / qchisq(c(1 - alpha / 2, alpha / 2), df = n - 2)
+
+t_crit
+rbind(IC_b0, IC_b1, IC_s2)
+```
+
+```{r ic_lm}
+confint(modelo, level = 0.95)
+all.equal(rbind(IC_b0, IC_b1), unname(confint(modelo)), check.attributes = FALSE)
+```
+
+```{r ic_tabla, echo=FALSE}
+ic_tab <- data.frame(
+  Parámetro = c("$\\beta_0$", "$\\beta_1$", "$\\sigma^2$"),
+  Estimación = f(c(b0, b1, sigma2), 4),
+  `Lím. inferior` = f(c(IC_b0[1], IC_b1[1], IC_s2[1]), 4),
+  `Lím. superior` = f(c(IC_b0[2], IC_b1[2], IC_s2[2]), 4),
+  check.names = FALSE)
+kable(ic_tab, format = "latex", booktabs = TRUE, linesep = "", escape = FALSE, align = "lrrr",
+      caption = "Intervalos de confianza al 95\\%.") |>
+  kable_styling(latex_options = "HOLD_position")
+```
+
+**Comentarios.** Con 95% de confianza, cada peso adicional de gasto en educación se asocia con un incremento del ingreso promedio de entre \$`r f(IC_b1[1])` y \$`r f(IC_b1[2])`. El intervalo para $\beta_1$ **no contiene al cero** y está completamente en la región positiva, lo cual ya anticipa que la relación es significativa y positiva. El intervalo es relativamente amplio (su límite superior es aproximadamente `r f(IC_b1[2]/IC_b1[1], 1)` veces el inferior), reflejo de la dispersión de los datos alrededor de la recta.
+
+# Pruebas de hipótesis sobre los coeficientes
+
+Se utiliza un nivel de significancia $\alpha = 0.05$. El estadístico de prueba para $H_0: \beta_j = 0$ es
+$$
+T_j = \frac{\hat\beta_j}{\operatorname{ee}(\hat\beta_j)} \overset{H_0}{\sim} t_{n-2}.
+$$
+
+## Significancia de la pendiente (prueba bilateral)
+
+$$
+H_0: \beta_1 = 0 \qquad \text{vs.} \qquad H_1: \beta_1 \neq 0 .
+$$
+Regla de decisión: rechazar $H_0$ si $|T_1| > t_{\alpha/2,\,n-2}$, o equivalentemente si $p = 2\,P(t_{n-2} > |T_1|) < \alpha$.
+
+## Relación positiva (prueba unilateral)
+
+Como la pregunta de interés es si la relación es **positiva**, planteamos también
+$$
+H_0: \beta_1 \le 0 \qquad \text{vs.} \qquad H_1: \beta_1 > 0 .
+$$
+Regla de decisión: rechazar $H_0$ si $T_1 > t_{\alpha,\,n-2}$, o si $p = P(t_{n-2} > T_1) < \alpha$.
+
+## Significancia de la ordenada al origen
+
+$$
+H_0: \beta_0 = 0 \qquad \text{vs.} \qquad H_1: \beta_0 \neq 0 .
+$$
+Regla de decisión: rechazar $H_0$ si $|T_0| > t_{\alpha/2,\,n-2}$.
+
+```{r pruebas_mano}
+T1 <- b1 / ee_b1
+T0 <- b0 / ee_b0
+
+p_b1_bilateral  <- 2 * pt(abs(T1), df = n - 2, lower.tail = FALSE)
+p_b1_unilateral <- pt(T1, df = n - 2, lower.tail = FALSE)
+p_b0_bilateral  <- 2 * pt(abs(T0), df = n - 2, lower.tail = FALSE)
+
+t_crit_uni <- qt(1 - alpha, df = n - 2)
+
+data.frame(
+  prueba      = c("b1 bilateral", "b1 unilateral (>0)", "b0 bilateral"),
+  estadistico = c(T1, T1, T0),
+  t_critico   = c(t_crit, t_crit_uni, t_crit),
+  p_valor     = c(p_b1_bilateral, p_b1_unilateral, p_b0_bilateral))
+```
+
+```{r pruebas_lm}
+# Comparación con la tabla de coeficientes de lm()
+coef(summary(modelo))
+all.equal(c(T0, T1), unname(coef(summary(modelo))[, "t value"]))
+```
+
+**Conclusiones.**
+
+* **Pendiente:** $T_1 = `r f(T1, 3)`$, muy por encima del valor crítico $t_{0.025,`r n-2`} = `r f(t_crit, 3)`$, con un $p$-valor del orden de $`r sci(p_b1_bilateral)`$. Se rechaza $H_0: \beta_1 = 0$: el gasto en educación **es un predictor significativo** del ingreso promedio de los hogares.
+* **Relación positiva:** en la prueba unilateral, $T_1 = `r f(T1, 3)` > t_{0.05,`r n-2`} = `r f(t_crit_uni, 3)`$ con $p$-valor $`r sci(p_b1_unilateral)`$. Hay evidencia muy fuerte de que $\beta_1 > 0$, lo que **confirma estadísticamente la intuición** de una relación positiva entre gasto educativo e ingreso.
+* **Ordenada al origen:** $T_0 = `r f(T0, 3)`$ con $p$-valor $`r sci(p_b0_bilateral)`$, por lo que también se rechaza $H_0: \beta_0 = 0$. Esto indica que la recta no pasa por el origen, aunque, como se mencionó, $\beta_0$ carece de interpretación práctica porque $x=0$ está fuera del rango de los datos.
+
+# Valoración global del ajuste
+
+## Descomposición de la variabilidad y tabla ANOVA
+
+La variabilidad total se descompone como
+$$
+\underbrace{\sum (y_i - \bar y)^2}_{\mathrm{SST}} = \underbrace{\sum (\hat y_i - \bar y)^2}_{\mathrm{SSR}} + \underbrace{\sum (y_i - \hat y_i)^2}_{\mathrm{SSE}},
+$$
+donde SST (*total sum of squares*) es la variabilidad total de la respuesta, SSR (*regression sum of squares*) la variabilidad explicada por la regresión y SSE (*error sum of squares*) la variabilidad residual no explicada, con $\mathrm{SSR} = \hat\beta_1^2 S_{xx} = \hat\beta_1 S_{xy}$. Los cuadrados medios son $\mathrm{MSR} = \mathrm{SSR}/1$ y $\mathrm{MSE} = \mathrm{SSE}/(n-2) = \hat\sigma^2$. La prueba $F$ de significancia global contrasta
+$$
+H_0: \beta_1 = 0 \qquad \text{vs.} \qquad H_1: \beta_1 \neq 0, \qquad
+F = \frac{\mathrm{SSR}/1}{\mathrm{SSE}/(n-2)} = \frac{\mathrm{MSR}}{\mathrm{MSE}} \overset{H_0}{\sim} F_{1,\,n-2},
+$$
+rechazando $H_0$ si $F > F_{\alpha;\,1,\,n-2}$. En regresión simple se cumple $F = T_1^2$.
+
+```{r anova_mano}
+SST <- Syy
+SSR <- sum((y_hat - ybar)^2)
+MSR <- SSR / 1
+MSE <- SSE / (n - 2)
+F0  <- MSR / MSE
+p_F <- pf(F0, 1, n - 2, lower.tail = FALSE)
+F_crit <- qf(1 - alpha, 1, n - 2)
+
+c(SST = SST, SSR = SSR, SSE = SSE, suma_SSR_SSE = SSR + SSE)
+round(c(F0 = F0, T1_cuadrado = T1^2, F_crit = F_crit), 4)
+format(p_F, digits = 3, scientific = TRUE)
+```
+
+```{r anova_tabla, echo=FALSE}
+anova_tab <- data.frame(
+  Fuente = c("Regresión", "Error", "Total"),
+  gl = c(1, n - 2, n - 1),
+  SS = f(c(SSR, SSE, SST), 0),
+  MS = c(f(MSR, 0), f(MSE, 0), ""),
+  F  = c(f(F0, 3), "", ""),
+  `p-valor` = c(format(p_F, digits = 3, scientific = TRUE), "", ""),
+  check.names = FALSE)
+kable(anova_tab, format = "latex", booktabs = TRUE, linesep = "", align = "lrrrrr",
+      caption = "Tabla ANOVA calculada a mano.") |>
+  kable_styling(latex_options = "HOLD_position")
+```
+
+```{r anova_lm}
+anova(modelo)
+```
+
+## Coeficiente de determinación
+
+$$
+R^2 = \frac{\mathrm{SSR}}{\mathrm{SST}} = 1 - \frac{\mathrm{SSE}}{\mathrm{SST}}, \qquad
+R^2_{\text{aj}} = 1 - \frac{\mathrm{SSE}/(n-2)}{\mathrm{SST}/(n-1)} .
+$$
+En regresión lineal simple, $R^2 = r^2$.
+
+```{r r2}
+R2    <- SSR / SST
+R2_aj <- 1 - (SSE / (n - 2)) / (SST / (n - 1))
+c(R2_mano = R2, r_al_cuadrado = r_mano^2, R2_lm = s$r.squared,
+  R2aj_mano = R2_aj, R2aj_lm = s$adj.r.squared)
+```
+
+**Comentarios.** La prueba $F$ ($F = `r fm(F0, 2)`$, $p < 0.001$) confirma la significancia global del modelo y, como se esperaba, coincide con $T_1^2$. El coeficiente de determinación es $R^2 = `r f(R2, 4)`$: el gasto en educación explica alrededor del **`r f(100*R2, 1)`% de la variabilidad** del ingreso trimestral promedio entre entidades y años. Es un ajuste moderado-bueno para datos de corte transversal agregados: la variable explicativa captura una parte importante del comportamiento del ingreso, pero cerca de `r f(100*(1-R2), 0)`% de la variabilidad queda sin explicar (estructura productiva de cada estado, mercado laboral, informalidad, etc.), lo que motiva incorporar más variables en entregas posteriores.
+
+## Diagnóstico de los supuestos
+
+```{r diagnostico, echo=FALSE, fig.height=3.4, fig.cap="Residuales contra valores ajustados y gráfica cuantil-cuantil normal de los residuales estandarizados."}
+r_est <- e / (sigma * sqrt(1 - (1/n + (x - xbar)^2 / Sxx)))  # residuales estandarizados (internos)
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+plot(y_hat, r_est, pch = 19, col = as.integer(datos$AÑO) + 1, ylim = c(-2.6, 3.2),
+     xlab = "Valores ajustados", ylab = "Residuales estandarizados",
+     main = "Residuales vs ajustados")
+abline(h = c(-2, 0, 2), lty = c(2, 1, 2), col = "gray40")
+legend("top", legend = levels(datos$AÑO), col = 2:4, pch = 19, cex = .7, horiz = TRUE, bg = "white")
+qqnorm(r_est, pch = 19, main = "Q-Q normal"); qqline(r_est, col = "red")
+```
+
+```{r normalidad}
+shapiro.test(e)
+all.equal(unname(r_est), unname(rstandard(modelo)))
+```
+
+* **Normalidad:** se contrasta $H_0$: los errores son normales vs. $H_1$: no lo son. La gráfica Q-Q muestra que los residuales siguen de cerca la recta teórica, y la prueba de Shapiro-Wilk da $p =$ `r f(shapiro.test(e)$p.value, 3)` $> 0.05$, por lo que **no se rechaza la normalidad**. La inferencia basada en la distribución $t$ es razonable.
+* **Homocedasticidad y linealidad:** los residuales se distribuyen alrededor de cero, sin un patrón curvo evidente ni un embudo marcado, y casi todos caen dentro de $\pm 2$. No hay indicios fuertes de heterocedasticidad.
+* **Efecto del año:** al colorear por año se observa un patrón sistemático. Los residuales de **2020** son mayormente positivos (residual promedio $\approx$ +\$`r f(mean(e[datos$AÑO == "2020"]), 0)`), mientras que los de 2018 son mayormente negativos ($\approx$ $-$\$`r f(abs(mean(e[datos$AÑO == "2018"])), 0)`). Es decir, el modelo subestima el ingreso en 2020, año en que el gasto educativo cayó sin que el ingreso lo hiciera en la misma proporción. Esto indica que el año es una variable omitida relevante.
+* **Independencia:** este es el supuesto más delicado. Cada entidad aparece tres veces (2018, 2020 y 2022), por lo que los errores de un mismo estado probablemente están correlacionados. Además, los montos están en **pesos corrientes**: la inflación entre 2018 y 2022 eleva simultáneamente ambas variables, y el choque de 2020 afectó de forma desigual al gasto educativo. Parte de la asociación podría deberse entonces al efecto del año. Esto no invalida la conclusión principal (la correlación es positiva y alta también *dentro* de cada año, Cuadro 2), pero sí sugiere que los errores estándar podrían estar subestimados.
+
+# Estimación y predicción
+
+Para un valor $x_0$ la estimación puntual es $\hat y_0 = \hat\beta_0 + \hat\beta_1 x_0$ tanto para la respuesta media como para una nueva observación; lo que cambia es la varianza asociada.
+
+* **Intervalo de confianza para la respuesta media** $E(Y \mid x_0) = \beta_0 + \beta_1 x_0$:
+$$
+\hat y_0 \pm t_{\alpha/2,\,n-2}\; \hat\sigma \sqrt{\frac{1}{n} + \frac{(x_0 - \bar x)^2}{S_{xx}}} .
+$$
+* **Intervalo de predicción para una nueva observación** $Y_0 = \beta_0 + \beta_1 x_0 + \varepsilon_0$:
+$$
+\hat y_0 \pm t_{\alpha/2,\,n-2}\; \hat\sigma \sqrt{1 + \frac{1}{n} + \frac{(x_0 - \bar x)^2}{S_{xx}}} .
+$$
+El término adicional "1" refleja la variabilidad propia de la nueva observación ($\varepsilon_0$), que no disminuye aunque aumente el tamaño de muestra.
+
+```{r funciones_pred}
+intervalo <- function(x0, tipo = c("confianza", "prediccion"), nivel = 0.95) {
+  tipo <- match.arg(tipo)
+  y0 <- b0 + b1 * x0
+  extra <- if (tipo == "prediccion") 1 else 0
+  ee <- sigma * sqrt(extra + 1 / n + (x0 - xbar)^2 / Sxx)
+  tq <- qt(1 - (1 - nivel) / 2, df = n - 2)
+  c(fit = y0, lwr = y0 - tq * ee, upr = y0 + tq * ee, ee = ee)
+}
+```
+
+## Pregunta 1: ingreso medio si el gasto en educación es de \$4,250
+
+```{r pregunta1}
+x1 <- 4250
+IC_media <- intervalo(x1, "confianza")
+IC_media
+predict(modelo, newdata = data.frame(GASTO.EDU = x1),
+        interval = "confidence", level = 0.95)
+```
+
+El modelo estima que el **ingreso trimestral promedio medio** de los hogares, para las entidades con un gasto promedio en educación de \$4,250, es de **\$`r f(IC_media["fit"])`**. Con 95% de confianza, este valor medio se encuentra entre **\$`r f(IC_media["lwr"])` y \$`r f(IC_media["upr"])`**.
+
+El valor \$4,250 se encuentra dentro del rango observado del gasto (\$`r f(min(x))`–\$`r f(max(x))`), por lo que se trata de una **interpolación** y la estimación es confiable bajo el modelo. Sin embargo, está por encima de la media $\bar x =$ \$`r f(xbar)` (en el cuartil superior de los datos), así que el intervalo es algo más ancho que el que se obtendría cerca de $\bar x$, donde la precisión es máxima.
+
+## Pregunta 2: pronóstico para un nuevo estado con gasto en educación de \$7,000
+
+El enunciado menciona "un ingreso de \$7,000"; sin embargo, el ingreso es la **variable respuesta** que se desea pronosticar y \$7,000 está muy por debajo del mínimo ingreso observado (\$`r f(min(y))`). Interpretamos por tanto que el valor \$7,000 corresponde al **gasto promedio en educación** ($x_0 = 7{,}000$) de la nueva entidad, que es la única lectura consistente con el modelo.
+
+```{r pregunta2}
+x2 <- 7000
+IP_nueva <- intervalo(x2, "prediccion")
+IC_media2 <- intervalo(x2, "confianza")
+IP_nueva
+predict(modelo, newdata = data.frame(GASTO.EDU = x2),
+        interval = "prediction", level = 0.95)
+```
+
+El valor pronosticado del ingreso trimestral promedio para una **nueva entidad** con gasto educativo de \$7,000 es de **\$`r f(IP_nueva["fit"])`**, con un intervalo de predicción al 95% de **\$`r f(IP_nueva["lwr"])` a \$`r f(IP_nueva["upr"])`**. (Como referencia, el intervalo de confianza para la *media* en ese mismo punto sería de \$`r f(IC_media2["lwr"])` a \$`r f(IC_media2["upr"])`.)
+
+```{r tabla_pred, echo=FALSE}
+pred_tab <- data.frame(
+  `Caso` = c("P1: media, x0 = 4,250", "P2: nueva obs., x0 = 7,000", "(Ref.) media, x0 = 7,000"),
+  `Estimación` = f(c(IC_media["fit"], IP_nueva["fit"], IC_media2["fit"])),
+  `Lím. inferior` = f(c(IC_media["lwr"], IP_nueva["lwr"], IC_media2["lwr"])),
+  `Lím. superior` = f(c(IC_media["upr"], IP_nueva["upr"], IC_media2["upr"])),
+  `Amplitud` = f(c(IC_media["upr"] - IC_media["lwr"], IP_nueva["upr"] - IP_nueva["lwr"],
+                   IC_media2["upr"] - IC_media2["lwr"])),
+  check.names = FALSE)
+kable(pred_tab, format = "latex", booktabs = TRUE, linesep = "", align = "lrrrr",
+      caption = "Resumen de estimaciones puntuales e intervalos al 95\\%.") |>
+  kable_styling(latex_options = "HOLD_position")
+```
+
+```{r bandas, echo=FALSE, fig.height=4, fig.cap="Bandas de confianza (media) y de predicción al 95\\%. Las líneas verticales marcan x0 = 4,250 y x0 = 7,000; la zona sombreada gris a la derecha está fuera del rango observado."}
+grid_x <- seq(min(x) * 0.9, 7300, length.out = 200)
+bandas <- data.frame(x = grid_x,
+  t(sapply(grid_x, intervalo, tipo = "confianza"))[, 1:3],
+  t(sapply(grid_x, intervalo, tipo = "prediccion"))[, 2:3])
+names(bandas) <- c("x", "fit", "lc", "uc", "lp", "up")
+ggplot(bandas, aes(x)) +
+  annotate("rect", xmin = max(x), xmax = Inf, ymin = -Inf, ymax = Inf, alpha = .12) +
+  geom_ribbon(aes(ymin = lp, ymax = up), fill = "orange", alpha = .25) +
+  geom_ribbon(aes(ymin = lc, ymax = uc), fill = "steelblue", alpha = .45) +
+  geom_line(aes(y = fit)) +
+  geom_point(data = datos, aes(GASTO.EDU, INGRESO.PROM), size = 1.2) +
+  geom_vline(xintercept = c(x1, x2), linetype = 2, color = "red") +
+  scale_x_continuous(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = "Gasto en educación (x)", y = "Ingreso trimestral promedio (Y)") +
+  theme_bw()
+```
+
+**Comentarios sobre los pronósticos.**
+
+1. **Intervalo de predicción vs. de confianza.** El intervalo de predicción de la pregunta 2 es mucho más ancho que el de la pregunta 1. Esto no se debe solo al valor de $x_0$, sino a que predecir una **observación individual** incorpora la variabilidad del error ($\hat\sigma^2 \approx$ `r f(sigma, 0)`$^2$), mientras que estimar la **media** solo incorpora la incertidumbre en $\hat\beta_0$ y $\hat\beta_1$. En $x_0 = 7{,}000$, el intervalo de predicción es unas `r f((IP_nueva["upr"]-IP_nueva["lwr"])/(IC_media2["upr"]-IC_media2["lwr"]), 1)` veces más amplio que el de la media.
+2. **Extrapolación.** El valor $x_0 = 7{,}000$ **excede el máximo gasto observado** (\$`r f(max(x))`, Ciudad de México en 2022). El pronóstico es, por tanto, una extrapolación: suponemos que la relación lineal se mantiene fuera del rango de los datos, lo cual no podemos verificar. Además, el término $(x_0-\bar x)^2/S_{xx}$ crece, y las bandas se ensanchan conforme nos alejamos de $\bar x$ (Figura 5). El resultado debe tomarse con cautela.
+3. **Amplitud práctica.** El intervalo de predicción abarca un rango de aproximadamente \$`r f(IP_nueva["upr"]-IP_nueva["lwr"], 0)`, lo que muestra que, para una entidad concreta, el gasto educativo por sí solo da un pronóstico bastante impreciso del ingreso. El modelo es más útil para describir la tendencia media que para predecir casos individuales.
+4. **Contexto temporal.** Como los montos están en pesos corrientes y un gasto educativo de \$7,000 solo sería plausible en años recientes (2022 o posteriores), el pronóstico implícitamente mezcla niveles de precios de distintos años; una versión deflactada de las variables mejoraría la interpretación.
+
+# Conclusiones
+
+* El análisis exploratorio muestra una relación **positiva y aproximadamente lineal** entre el gasto trimestral promedio en educación y el ingreso trimestral promedio de los hogares ($r =$ `r f(r_mano, 3)`).
+* El modelo ajustado es $\hat y = `r fm(b0)` + `r f(b1, 4)`\,x$. Las estimaciones calculadas a mano coinciden exactamente con las de `lm()`.
+* La pendiente es **significativamente positiva** (prueba unilateral, $p$-valor $\approx `r sci(p_b1_unilateral)`$), por lo que los datos confirman la intuición: a mayor gasto en educación, mayor ingreso promedio de los hogares. Cada peso adicional de gasto educativo se asocia con entre \$`r f(IC_b1[1])` y \$`r f(IC_b1[2])` más de ingreso (IC 95%).
+* El modelo explica alrededor del `r f(100*R2, 1)`% de la variabilidad del ingreso ($R^2 =$ `r f(R2, 3)`), lo cual es un ajuste razonable, aunque deja una parte importante sin explicar.
+* Para un gasto de \$4,250, el ingreso medio estimado es \$`r f(IC_media["fit"])` (IC 95%: \$`r f(IC_media["lwr"])`–\$`r f(IC_media["upr"])`). Para una nueva entidad con gasto de \$7,000, el ingreso pronosticado es \$`r f(IP_nueva["fit"])` (IP 95%: \$`r f(IP_nueva["lwr"])`–\$`r f(IP_nueva["upr"])`), aunque este último es una extrapolación.
+* Las principales limitaciones son la posible **dependencia** entre observaciones de un mismo estado, el uso de **pesos corrientes** y el hecho de que la relación es **asociativa, no causal**. Estas limitaciones se podrán abordar en las siguientes entregas con modelos de regresión múltiple (por ejemplo, incluyendo el año, la escolaridad promedio, la desocupación o la informalidad).
